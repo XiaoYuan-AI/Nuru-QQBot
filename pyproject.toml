@@ -1,14 +1,20 @@
 [project]
-name = "Nuru-sama"
+name = "nuru-qqbot"
 version = "0.1.0"
-description = "Nuru-sama"
+description = "NoneBot2 QQ bot for Nuru-sama."
 readme = "README.md"
 requires-python = ">=3.9, <4.0"
+dependencies = [
+    "fast-langdetect==1.0.1",
+    "nonebot-adapter-onebot==2.4.6",
+    "nonebot2[fastapi,websockets]==2.4.2",
+    "python-dotenv==1.1.1",
+]
 
 [tool.nonebot]
 adapters = [
     { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }
 ]
-plugins = ["nonebot_plugin_userinfo"]
+plugins = []
 plugin_dirs = ["src/plugins"]
 builtin_plugins = []
