@@ -39,18 +39,26 @@ def is_group_admin(event: Any) -> bool:
 
 
 def parse_personality_command(text: str, prefix: str) -> Optional[str]:
-    normalized = " ".join(text.strip().split())
-    command = " ".join(prefix.strip().split())
-    if not normalized.lower().startswith(command.lower()):
+    remainder = _parse_prefixed_remainder(text, prefix)
+    if remainder is None:
         return None
-
-    remainder = normalized[len(command) :].strip()
     return remainder or "list"
 
 
 def is_personality_command(event: Any, prefix: str) -> bool:
     text = event_plain_text(event)
     return parse_personality_command(text, prefix) is not None
+
+
+def parse_idle_command(text: str, prefix: str) -> Optional[str]:
+    remainder = _parse_prefixed_remainder(text, prefix)
+    if remainder is None:
+        return None
+    return remainder or "status"
+
+
+def is_idle_command(event: Any, prefix: str) -> bool:
+    return parse_idle_command(event_plain_text(event), prefix) is not None
 
 
 def is_image_generation_request(text: str, commands: Iterable[str]) -> bool:
@@ -121,3 +129,15 @@ def _segment_data(segment: Any) -> Dict[str, Any]:
     if isinstance(data, dict):
         return data
     return {}
+
+
+def _parse_prefixed_remainder(text: str, prefix: str) -> Optional[str]:
+    normalized = " ".join(text.strip().split())
+    command = " ".join(prefix.strip().split())
+    lowered = normalized.lower()
+    command_lowered = command.lower()
+    if lowered == command_lowered:
+        return ""
+    if not lowered.startswith(command_lowered + " "):
+        return None
+    return normalized[len(command) :].strip()

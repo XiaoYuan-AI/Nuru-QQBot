@@ -47,3 +47,22 @@ def test_memory_store_persists_recent_messages_and_recalls(tmp_path):
         "Strawberry cake sounds cute.",
     }
     reopened.close()
+
+
+def test_memory_store_recalls_group_topics_separately(tmp_path):
+    store = MemoryStore(
+        sqlite_path=str(tmp_path / "memory.sqlite3"),
+        chroma_path=str(tmp_path / "chroma"),
+        collection_name="test_memory",
+        enable_chroma=False,
+    )
+    store.add_message("group", "42", "1001", "Alice", "user", "waffle lore returns")
+    store.add_message("group", "42", "1002", "Bob", "user", "waffle lore is canon")
+    store.add_message("group", "99", "1001", "Alice", "user", "different group waffle")
+
+    group_recall = store.recall_scope("group", "42", "waffle canon", limit=3)
+    topics = store.group_topics("42")
+
+    assert {item.record.scope_id for item in group_recall} == {"42"}
+    assert any(topic.term == "waffle" for topic in topics)
+    store.close()

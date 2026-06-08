@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import Dict, List
 
 
 class Config(BaseModel):
@@ -35,6 +35,8 @@ class Config(BaseModel):
     nuru_idle_min_seconds: int = 900
     nuru_idle_group_ids: str = ""
     nuru_idle_prompt: str = "Send a short playful idle message to restart chat."
+    nuru_idle_command_prefix: str = "nuru idle"
+    nuru_quiet_mode_default: bool = False
 
     nuru_image_recognition_enabled: bool = True
     nuru_image_generation_enabled: bool = True
@@ -44,6 +46,26 @@ class Config(BaseModel):
     nuru_voice_probability: float = 1.0
     nuru_voice_mode: str = "file"
 
+    nuru_admin_requires_mention: bool = True
+    nuru_group_min_reply_gap_seconds: float = 2.0
+    nuru_private_min_reply_gap_seconds: float = 0.0
+    nuru_max_queue_depth: int = 3
+    nuru_busy_message: str = "I'm busy generating something. Try again in a moment."
+
+    nuru_api_retries: int = 2
+    nuru_api_backoff_seconds: float = 0.5
+
+    nuru_refusal_energy_threshold: float = 0.20
+    nuru_refusal_terms: str = "suicide,self harm,bomb,malware,dox,exploit"
+    nuru_low_energy_refusal: str = (
+        "I'm too drained to answer that properly right now. Try me again in a bit."
+    )
+    nuru_safety_refusal: str = "I shouldn't help with that topic. Let's keep chat safe."
+
+    nuru_mood_emoticons: str = (
+        "balanced=:),warm=<3,curious=?,mischievous=>:),sleepy=-_-,irritated=..."
+    )
+
     def personality_names(self) -> List[str]:
         return _csv_values(self.nuru_available_personalities)
 
@@ -52,6 +74,18 @@ class Config(BaseModel):
 
     def image_generation_commands(self) -> List[str]:
         return _csv_values(self.nuru_image_generation_commands)
+
+    def refusal_terms(self) -> List[str]:
+        return _csv_values(self.nuru_refusal_terms)
+
+    def mood_emoticons(self) -> Dict[str, str]:
+        values: Dict[str, str] = {}
+        for item in _csv_values(self.nuru_mood_emoticons):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            values[key.strip()] = value.strip()
+        return values
 
 
 def _csv_values(value: str) -> List[str]:

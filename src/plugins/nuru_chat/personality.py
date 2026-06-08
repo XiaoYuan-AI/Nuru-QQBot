@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
-from .mood import MoodState, suggested_reply_limit
+from .mood import MoodState, mood_formality, suggested_reply_limit
 
 
 @dataclass
@@ -138,7 +138,8 @@ def build_system_prompt(profile: PersonalityProfile, mood: MoodState) -> str:
         f"{profile.system_prompt}\n"
         f"Style: {profile.response_style}.\n"
         f"Current mood: {mood.label}. Adjust tone naturally and stay under "
-        f"{limit} characters unless the user explicitly asks for detail."
+        f"{limit} characters unless the user explicitly asks for detail. "
+        f"Formality: {mood_formality(mood)}."
     )
 
 

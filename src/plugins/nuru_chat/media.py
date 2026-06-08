@@ -1,11 +1,8 @@
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
+def build_reply_message(text: str, image: Optional[Any] = None) -> Any:
+    from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-from .api import ImageResult, VoicePayload
-
-
-def build_reply_message(text: str, image: Optional[ImageResult] = None) -> Message:
     message = Message()
     if text:
         message += MessageSegment.text(text)
@@ -24,19 +21,28 @@ def build_reply_message(text: str, image: Optional[ImageResult] = None) -> Messa
     return message
 
 
-async def send_private_voice(bot: Bot, user_id: int, voice: Optional[VoicePayload]) -> None:
+async def send_private_voice(
+    bot: Any,
+    user_id: int,
+    voice: Optional[Any],
+    record_factory: Optional[Callable[[str], Any]] = None,
+) -> None:
     if voice is None:
         return
     file_value = voice_file_value(voice)
     if not file_value:
         return
+    if record_factory is not None:
+        message = record_factory(file_value)
+    else:
+        message = _record_segment(file_value)
     await bot.send_private_msg(
         user_id=int(user_id),
-        message=MessageSegment.record(file=file_value),
+        message=message,
     )
 
 
-def image_file_value(image: ImageResult) -> str:
+def image_file_value(image: Any) -> str:
     if image.url:
         return image.url
     if image.base64_data:
@@ -46,7 +52,7 @@ def image_file_value(image: ImageResult) -> str:
     return ""
 
 
-def voice_file_value(voice: VoicePayload) -> str:
+def voice_file_value(voice: Any) -> str:
     if voice.file:
         return voice.file
     if voice.base64_data:
@@ -54,3 +60,9 @@ def voice_file_value(voice: VoicePayload) -> str:
             return voice.base64_data
         return f"base64://{voice.base64_data}"
     return ""
+
+
+def _record_segment(file_value: str) -> Any:
+    from nonebot.adapters.onebot.v11 import MessageSegment
+
+    return MessageSegment.record(file=file_value)

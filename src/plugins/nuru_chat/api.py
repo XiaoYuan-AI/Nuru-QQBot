@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import random
 from dataclasses import dataclass
@@ -49,6 +50,8 @@ class NuruModelClient:
 
     async def create_chat_reply(self, payload: Dict[str, Any]) -> ModelReply:
         data = await self._post_json(self.config.nuru_chat_endpoint, payload)
+        if data.get("_api_failed"):
+            return ModelReply(text=self.config.nuru_busy_message)
         text = _extract_text(data)
         if not text:
             text = self._fallback_reply(payload)
@@ -61,6 +64,8 @@ class NuruModelClient:
 
     async def create_idle_message(self, payload: Dict[str, Any]) -> str:
         data = await self._post_json(self.config.nuru_chat_endpoint, payload)
+        if data.get("_api_failed"):
+            return self.config.nuru_busy_message
         return _extract_text(data) or "It got quiet in here, so I came back to poke chat."
 
     async def recognize_images(self, text: str, images: Sequence[str]) -> str:
@@ -79,6 +84,8 @@ class NuruModelClient:
             self.config.nuru_image_generation_endpoint,
             {"prompt": prompt},
         )
+        if data.get("_api_failed"):
+            return ImageResult(text=self.config.nuru_busy_message)
         image_data = data.get("image") or _first_data_item(data)
         if isinstance(image_data, dict):
             return ImageResult(
@@ -115,13 +122,27 @@ class NuruModelClient:
 
         try:
             async with httpx.AsyncClient(timeout=self.config.nuru_api_timeout_seconds) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                return data if isinstance(data, dict) else {}
+                attempts = max(1, self.config.nuru_api_retries + 1)
+                for attempt in range(attempts):
+                    try:
+                        response = await client.post(url, json=payload, headers=headers)
+                        response.raise_for_status()
+                        data = response.json()
+                        return data if isinstance(data, dict) else {}
+                    except Exception as exc:
+                        if attempt >= attempts - 1:
+                            raise exc
+                        delay = self.config.nuru_api_backoff_seconds * (2**attempt)
+                        logger.warning(
+                            "Nuru model API request failed for {} on attempt {}: {}",
+                            endpoint,
+                            attempt + 1,
+                            exc,
+                        )
+                        await asyncio.sleep(delay)
         except Exception as exc:
-            logger.warning("Nuru model API request failed for {}: {}", endpoint, exc)
-            return {}
+            logger.warning("Nuru model API request failed for {} after retries: {}", endpoint, exc)
+            return {"_api_failed": True}
 
     def _fallback_reply(self, payload: Dict[str, Any]) -> str:
         text = str(payload.get("text") or "").strip()

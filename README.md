@@ -3,7 +3,7 @@
 Nuru QQ Bot is a NoneBot2 backend for a Neuro-sama-like AI VTuber on QQ using
 the OneBot V11 adapter. The `nuru_chat` plugin handles private messages, group
 mentions, long-term memory, mood/personality state, image tasks, optional voice
-messages, and scheduled idle group messages.
+messages, queued generation, refusal logging, and scheduled idle group messages.
 
 ## Project Tree
 
@@ -25,10 +25,15 @@ messages, and scheduled idle group messages.
 |           |-- mood.py
 |           |-- personality.py
 |           |-- plugin.py
+|           |-- queue.py
+|           |-- refusal.py
 |           `-- rules.py
 `-- tests/
+    |-- test_awareness.py
+    |-- test_media.py
     |-- test_memory.py
     |-- test_mood.py
+    |-- test_queue.py
     `-- test_rules.py
 ```
 
@@ -51,3 +56,25 @@ messages, and scheduled idle group messages.
 The plugin uses SQLite for conversation, mood, group, and personality state, and
 ChromaDB for semantic memory under `data/nuru_chat/` by default. Configure model
 API, image, voice, idle-message, and personality settings in `.env`.
+
+## Chat Behavior
+
+- Private chats respond normally.
+- Group chats respond only when the bot is @mentioned, except scheduled idle
+  messages.
+- Group memory is scoped by group, so recalled topics and inside jokes stay tied
+  to the group where they happened.
+- Mood changes reply length, formality, and optional emoticon suffixes.
+
+## Admin Commands
+
+When `NURU_ADMIN_REQUIRES_MENTION=true`, group admin commands must mention the
+bot. Examples:
+
+- `@Nuru nuru personality list`
+- `@Nuru nuru personality evil`
+- `@Nuru nuru idle status`
+- `@Nuru nuru idle 600`
+- `@Nuru nuru idle off`
+- `@Nuru nuru idle quiet on`
+- `@Nuru nuru idle quiet off`

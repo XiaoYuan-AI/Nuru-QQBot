@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -29,6 +30,13 @@ class MemoryRecord:
 class MemorySearchResult:
     record: MemoryRecord
     score: float
+
+
+@dataclass
+class MemoryTopic:
+    term: str
+    count: int
+    sample: str
 
 
 class MemoryStore:
@@ -138,6 +146,48 @@ class MemoryStore:
                 return chroma_results
 
         return self._recall_from_sqlite(user_id, query, limit)
+
+    def recall_scope(
+        self,
+        scope_type: str,
+        scope_id: str,
+        query: str,
+        limit: int = 6,
+    ) -> List[MemorySearchResult]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM conversation_messages
+            WHERE scope_type = ? AND scope_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 240
+            """,
+            (scope_type, scope_id),
+        ).fetchall()
+        return _score_rows(rows, query, limit)
+
+    def group_topics(self, group_id: str, limit: int = 8) -> List[MemoryTopic]:
+        rows = self._conn.execute(
+            """
+            SELECT content FROM conversation_messages
+            WHERE scope_type = 'group' AND scope_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 400
+            """,
+            (group_id,),
+        ).fetchall()
+        counts: Counter = Counter()
+        samples: Dict[str, str] = {}
+        for row in rows:
+            content = str(row["content"])
+            for token in _topic_tokens(content):
+                counts[token] += 1
+                samples.setdefault(token, content)
+
+        return [
+            MemoryTopic(term=term, count=count, sample=samples.get(term, ""))
+            for term, count in counts.most_common(limit)
+            if count > 1
+        ]
 
     def _create_tables(self) -> None:
         self._conn.executescript(
@@ -289,16 +339,7 @@ class MemoryStore:
             """,
             (user_id,),
         ).fetchall()
-        query_terms = set(_tokens(query))
-        scored: List[MemorySearchResult] = []
-        for row in rows:
-            record = _record_from_row(row)
-            terms = set(_tokens(record.content))
-            score = _overlap_score(query_terms, terms)
-            if score > 0:
-                scored.append(MemorySearchResult(record=record, score=score))
-        scored.sort(key=lambda item: item.score, reverse=True)
-        return scored[:limit]
+        return _score_rows(rows, query, limit)
 
     def _records_by_ids(self, ids: Sequence[int]) -> List[MemoryRecord]:
         if not ids:
@@ -355,6 +396,49 @@ def _record_from_row(row: sqlite3.Row) -> MemoryRecord:
 
 def _tokens(text: str) -> List[str]:
     return re.findall(r"[a-zA-Z0-9_]+", text.lower())
+
+
+def _topic_tokens(text: str) -> List[str]:
+    ignored = {
+        "about",
+        "after",
+        "again",
+        "also",
+        "because",
+        "before",
+        "could",
+        "from",
+        "have",
+        "just",
+        "like",
+        "that",
+        "this",
+        "with",
+        "would",
+        "your",
+    }
+    return [
+        token
+        for token in _tokens(text)
+        if len(token) >= 4 and token not in ignored and not token.isdigit()
+    ]
+
+
+def _score_rows(
+    rows: Sequence[sqlite3.Row],
+    query: str,
+    limit: int,
+) -> List[MemorySearchResult]:
+    query_terms = set(_tokens(query))
+    scored: List[MemorySearchResult] = []
+    for row in rows:
+        record = _record_from_row(row)
+        terms = set(_tokens(record.content))
+        score = _overlap_score(query_terms, terms)
+        if score > 0:
+            scored.append(MemorySearchResult(record=record, score=score))
+    scored.sort(key=lambda item: item.score, reverse=True)
+    return scored[:limit]
 
 
 def _overlap_score(left: Iterable[str], right: Iterable[str]) -> float:

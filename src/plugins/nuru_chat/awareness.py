@@ -2,7 +2,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass
@@ -93,21 +93,119 @@ class GroupAwarenessStore:
         self,
         min_idle_seconds: int,
         configured_group_ids: Iterable[str],
+        quiet_mode_default: bool = False,
         now: Optional[float] = None,
     ) -> List[str]:
         timestamp = now if now is not None else time.time()
         configured = {str(group_id) for group_id in configured_group_ids if str(group_id)}
-        rows = self._conn.execute("SELECT * FROM group_activity").fetchall()
+        rows = self._conn.execute(
+            """
+            SELECT
+                group_activity.group_id,
+                group_activity.last_activity_at,
+                group_activity.last_bot_message_at,
+                group_idle_settings.idle_interval_seconds,
+                group_idle_settings.quiet_mode
+            FROM group_activity
+            LEFT JOIN group_idle_settings
+                ON group_activity.group_id = group_idle_settings.group_id
+            """
+        ).fetchall()
         idle: List[str] = []
         for row in rows:
             group_id = str(row["group_id"])
             if configured and group_id not in configured:
                 continue
+            quiet_mode_value = row["quiet_mode"]
+            quiet_mode = (
+                quiet_mode_default
+                if quiet_mode_value is None
+                else bool(int(quiet_mode_value))
+            )
+            if quiet_mode:
+                continue
+            interval_value = row["idle_interval_seconds"]
+            interval = (
+                min_idle_seconds
+                if interval_value is None
+                else max(0, int(interval_value))
+            )
+            if interval <= 0:
+                continue
             last_activity = float(row["last_activity_at"])
             last_bot = float(row["last_bot_message_at"])
-            if timestamp - max(last_activity, last_bot) >= min_idle_seconds:
+            if timestamp - max(last_activity, last_bot) >= interval:
                 idle.append(group_id)
         return idle
+
+    def set_idle_interval(
+        self,
+        group_id: str,
+        idle_interval_seconds: int,
+        updated_by: str,
+    ) -> None:
+        self._upsert_idle_settings(
+            group_id=group_id,
+            idle_interval_seconds=max(0, idle_interval_seconds),
+            quiet_mode=None,
+            updated_by=updated_by,
+        )
+
+    def set_quiet_mode(self, group_id: str, quiet_mode: bool, updated_by: str) -> None:
+        self._upsert_idle_settings(
+            group_id=group_id,
+            idle_interval_seconds=None,
+            quiet_mode=quiet_mode,
+            updated_by=updated_by,
+        )
+
+    def idle_settings(self, group_id: str) -> Dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT * FROM group_idle_settings WHERE group_id = ?",
+            (group_id,),
+        ).fetchone()
+        if row is None:
+            return {}
+        interval = row["idle_interval_seconds"]
+        return {
+            "idle_interval_seconds": None if interval is None else int(interval),
+            "quiet_mode": bool(int(row["quiet_mode"])),
+            "updated_by": str(row["updated_by"]),
+        }
+
+    def _upsert_idle_settings(
+        self,
+        group_id: str,
+        idle_interval_seconds: Optional[int],
+        quiet_mode: Optional[bool],
+        updated_by: str,
+    ) -> None:
+        current = self.idle_settings(group_id)
+        interval = (
+            current.get("idle_interval_seconds")
+            if idle_interval_seconds is None
+            else idle_interval_seconds
+        )
+        quiet = (
+            bool(current.get("quiet_mode", False))
+            if quiet_mode is None
+            else quiet_mode
+        )
+        self._conn.execute(
+            """
+            INSERT INTO group_idle_settings (
+                group_id, idle_interval_seconds, quiet_mode, updated_by, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                idle_interval_seconds = excluded.idle_interval_seconds,
+                quiet_mode = excluded.quiet_mode,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (group_id, interval, 1 if quiet else 0, updated_by, time.time()),
+        )
+        self._conn.commit()
 
     def _create_tables(self) -> None:
         self._conn.executescript(
@@ -125,6 +223,14 @@ class GroupAwarenessStore:
                 last_seen_at REAL NOT NULL,
                 message_count INTEGER NOT NULL,
                 PRIMARY KEY(group_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS group_idle_settings (
+                group_id TEXT PRIMARY KEY,
+                idle_interval_seconds INTEGER,
+                quiet_mode INTEGER NOT NULL DEFAULT 0,
+                updated_by TEXT NOT NULL,
+                updated_at REAL NOT NULL
             );
             """
         )

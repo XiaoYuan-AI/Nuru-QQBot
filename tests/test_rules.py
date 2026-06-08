@@ -2,11 +2,13 @@ import asyncio
 from types import SimpleNamespace
 
 from src.plugins.nuru_chat.rules import (
+    event_is_tome,
     extract_image_sources,
     is_addressed_group_message,
     is_group_admin,
     is_image_generation_request,
     is_private_message,
+    parse_idle_command,
     parse_image_generation_prompt,
     parse_personality_command,
 )
@@ -38,6 +40,10 @@ def test_group_and_private_matcher_rules():
     assert asyncio.run(is_private_message(private)) is True
     assert asyncio.run(is_private_message(group)) is False
 
+    group._to_me = False
+    assert asyncio.run(is_addressed_group_message(group)) is False
+    assert event_is_tome(group) is False
+
 
 def test_personality_admin_and_command_parser():
     admin = FakeEvent(
@@ -50,6 +56,13 @@ def test_personality_admin_and_command_parser():
     assert is_group_admin(admin) is True
     assert parse_personality_command(admin.get_plaintext(), "nuru personality") == "evil"
     assert parse_personality_command("nuru personality", "nuru personality") == "list"
+    assert parse_personality_command("nuru personalityx", "nuru personality") is None
+
+
+def test_idle_command_parser():
+    assert parse_idle_command("nuru idle 300", "nuru idle") == "300"
+    assert parse_idle_command("nuru idle quiet on", "nuru idle") == "quiet on"
+    assert parse_idle_command("nuru idle", "nuru idle") == "status"
 
 
 def test_image_generation_and_image_sources():

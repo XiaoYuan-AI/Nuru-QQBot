@@ -12,22 +12,27 @@ from .config import Config
 from .language import is_expected_language, should_validate_language
 from .media import build_reply_message, send_private_voice
 from .memory import MemorySearchResult, MemoryStore
-from .mood import MoodState, MoodStore
+from .mood import MoodState, MoodStore, format_mood_reply
 from .personality import (
     allowed_personalities,
     build_system_prompt,
     get_profile,
 )
 from .personality import PersonalityStore
+from .queue import ScopeMessageQueue
+from .refusal import RefusalLogStore, decide_refusal
 from .rules import (
+    event_is_tome,
     event_plain_text,
     extract_image_sources,
     is_addressed_group_message,
     is_group_admin,
     is_group_message,
+    is_idle_command,
     is_image_generation_request,
     is_personality_command,
     is_private_message,
+    parse_idle_command,
     parse_image_generation_prompt,
     parse_personality_command,
 )
@@ -58,18 +63,35 @@ personality_store = PersonalityStore(
 )
 awareness_store = GroupAwarenessStore(config.nuru_memory_sqlite_path)
 model_client = NuruModelClient(config)
+refusal_store = RefusalLogStore(config.nuru_memory_sqlite_path)
+message_queue = ScopeMessageQueue(
+    max_queue_depth=config.nuru_max_queue_depth,
+    busy_message=config.nuru_busy_message,
+)
 
 
 async def is_personality_admin_command(event: GroupMessageEvent) -> bool:
-    return is_group_admin(event) and is_personality_command(
+    return is_admin_command_event(
         event,
-        config.nuru_personality_command_prefix,
+        is_personality_command(event, config.nuru_personality_command_prefix),
+    )
+
+
+async def is_idle_admin_command(event: GroupMessageEvent) -> bool:
+    return is_admin_command_event(
+        event,
+        is_idle_command(event, config.nuru_idle_command_prefix),
     )
 
 
 group_personality_admin = on_message(
     rule=Rule(is_personality_admin_command),
     priority=3,
+    block=True,
+)
+group_idle_admin = on_message(
+    rule=Rule(is_idle_admin_command),
+    priority=4,
     block=True,
 )
 group_observer = on_message(rule=Rule(is_group_message), priority=90, block=False)
@@ -116,6 +138,43 @@ async def handle_personality_admin(event: GroupMessageEvent) -> None:
     await group_personality_admin.finish(f"Personality switched to {requested}.")
 
 
+@group_idle_admin.handle()
+async def handle_idle_admin(event: GroupMessageEvent) -> None:
+    command = parse_idle_command(
+        event_plain_text(event),
+        config.nuru_idle_command_prefix,
+    )
+    group_id = str(event.group_id)
+    settings = awareness_store.idle_settings(group_id)
+
+    if command in {None, "status"}:
+        interval = settings.get("idle_interval_seconds", config.nuru_idle_min_seconds)
+        quiet = settings.get("quiet_mode", config.nuru_quiet_mode_default)
+        await group_idle_admin.finish(
+            f"Idle interval: {interval}s. Quiet mode: {'on' if quiet else 'off'}."
+        )
+
+    normalized = command.strip().lower()
+    if normalized == "off":
+        awareness_store.set_idle_interval(group_id, 0, str(event.user_id))
+        await group_idle_admin.finish("Idle messages disabled for this group.")
+
+    if normalized.startswith("quiet "):
+        value = normalized.split(" ", 1)[1].strip()
+        if value not in {"on", "off"}:
+            await group_idle_admin.finish("Use: nuru idle quiet on|off")
+        awareness_store.set_quiet_mode(group_id, value == "on", str(event.user_id))
+        await group_idle_admin.finish(f"Quiet mode {'enabled' if value == 'on' else 'disabled'}.")
+
+    try:
+        interval_seconds = int(normalized)
+    except ValueError:
+        await group_idle_admin.finish("Use: nuru idle <seconds>|off|quiet on|quiet off")
+
+    awareness_store.set_idle_interval(group_id, interval_seconds, str(event.user_id))
+    await group_idle_admin.finish(f"Idle interval set to {interval_seconds}s.")
+
+
 @group_observer.handle()
 async def observe_group_message(event: GroupMessageEvent) -> None:
     record_group_activity(event)
@@ -124,13 +183,19 @@ async def observe_group_message(event: GroupMessageEvent) -> None:
 @group_chat.handle()
 async def handle_group_chat(bot: Bot, event: GroupMessageEvent) -> None:
     record_group_activity(event)
-    reply = await build_chat_reply(
-        scope_type="group",
-        scope_id=str(event.group_id),
-        user_id=str(event.user_id),
-        user_name=display_name(event),
-        event=event,
-        addressed=True,
+    group_id = str(event.group_id)
+    reply = await message_queue.run(
+        scope_key=f"group:{group_id}",
+        min_gap_seconds=config.nuru_group_min_reply_gap_seconds,
+        factory=lambda: build_chat_reply(
+            scope_type="group",
+            scope_id=group_id,
+            user_id=str(event.user_id),
+            user_name=display_name(event),
+            event=event,
+            addressed=True,
+        ),
+        busy_factory=lambda message: ModelReply(text=message),
     )
     if reply.image is not None and not reply.text:
         reply.text = reply.image.text
@@ -141,13 +206,19 @@ async def handle_group_chat(bot: Bot, event: GroupMessageEvent) -> None:
 
 @private_chat.handle()
 async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
-    reply = await build_chat_reply(
-        scope_type="private",
-        scope_id=str(event.user_id),
-        user_id=str(event.user_id),
-        user_name=display_name(event),
-        event=event,
-        addressed=True,
+    user_id = str(event.user_id)
+    reply = await message_queue.run(
+        scope_key=f"private:{user_id}",
+        min_gap_seconds=config.nuru_private_min_reply_gap_seconds,
+        factory=lambda: build_chat_reply(
+            scope_type="private",
+            scope_id=user_id,
+            user_id=user_id,
+            user_name=display_name(event),
+            event=event,
+            addressed=True,
+        ),
+        busy_factory=lambda message: ModelReply(text=message),
     )
     message = build_reply_message(reply.text, reply.image)
     await private_chat.send(message)
@@ -187,9 +258,33 @@ async def build_chat_reply(
     )
     personality_name = personality_store.get_personality(scope_type, scope_id)
     profile = get_profile(personality_name)
+    refusal = decide_refusal(
+        text=text,
+        mood=mood,
+        blocked_terms=config.refusal_terms(),
+        energy_threshold=config.nuru_refusal_energy_threshold,
+        low_energy_message=config.nuru_low_energy_refusal,
+        safety_message=config.nuru_safety_refusal,
+    )
+    if refusal.refused:
+        refusal_store.add(scope_type, scope_id, user_id, refusal.reason, text)
+        return ModelReply(
+            text=format_mood_reply(
+                refusal.message,
+                mood,
+                profile.base_reply_limit,
+                config.mood_emoticons(),
+            )
+        )
 
     if image_prompt is not None:
         image = await model_client.generate_image(image_prompt)
+        image.text = format_mood_reply(
+            image.text,
+            mood,
+            profile.base_reply_limit,
+            config.mood_emoticons(),
+        )
         content = f"[image generation] {image_prompt}"
         save_memory(
             scope_type,
@@ -251,8 +346,22 @@ async def build_chat_reply(
             embedding=embedding,
             limit=config.nuru_memory_recall_limit,
         ),
+        group_memories=memory_store.recall_scope(
+            "group",
+            scope_id,
+            memory_text or text,
+            limit=config.nuru_memory_recall_limit,
+        )
+        if scope_type == "group"
+        else [],
     )
     reply = await model_client.create_chat_reply(payload)
+    reply.text = format_mood_reply(
+        reply.text,
+        mood,
+        profile.base_reply_limit,
+        config.mood_emoticons(),
+    )
     save_memory(
         scope_type,
         scope_id,
@@ -279,6 +388,7 @@ def build_model_payload(
     personality_name: str,
     system_prompt: str,
     memories: List[MemorySearchResult],
+    group_memories: List[MemorySearchResult],
 ) -> Dict[str, Any]:
     return {
         "event_type": "message",
@@ -319,6 +429,25 @@ def build_model_payload(
             }
             for item in memories
         ],
+        "group_memories": [
+            {
+                "score": item.score,
+                "role": item.record.role,
+                "user": item.record.user_name,
+                "content": item.record.content,
+            }
+            for item in group_memories
+        ],
+        "group_topics": [
+            {
+                "topic": topic.term,
+                "count": topic.count,
+                "sample": topic.sample,
+            }
+            for topic in memory_store.group_topics(scope_id)
+        ]
+        if scope_type == "group"
+        else [],
         "participants": [
             {
                 "id": participant.user_id,
@@ -377,6 +506,14 @@ def display_name(event: MessageEvent) -> str:
     return str(getattr(event, "user_id", "unknown"))
 
 
+def is_admin_command_event(event: GroupMessageEvent, command_matches: bool) -> bool:
+    if not command_matches or not is_group_admin(event):
+        return False
+    if config.nuru_admin_requires_mention and not event_is_tome(event):
+        return False
+    return True
+
+
 @driver.on_startup
 async def start_idle_scheduler() -> None:
     global _idle_task
@@ -404,6 +541,7 @@ async def send_idle_messages() -> None:
     for group_id in awareness_store.idle_group_ids(
         min_idle_seconds=config.nuru_idle_min_seconds,
         configured_group_ids=config.idle_group_ids(),
+        quiet_mode_default=config.nuru_quiet_mode_default,
     ):
         text = await model_client.create_idle_message(
             {

@@ -2,7 +2,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 
 POSITIVE_WORDS = {"love", "great", "nice", "good", "thanks", "cute", "happy"}
@@ -166,6 +166,32 @@ def suggested_reply_limit(state: MoodState, base_limit: int) -> int:
     return max(80, min(600, limit))
 
 
+def mood_formality(state: MoodState) -> str:
+    if state.energy < 0.35:
+        return "casual and brief"
+    if state.affection < 0.35:
+        return "polite and reserved"
+    if state.curiosity > 0.7:
+        return "curious and conversational"
+    return "casual streamer chat"
+
+
+def format_mood_reply(
+    text: str,
+    state: MoodState,
+    base_limit: int,
+    emoticons: Dict[str, str],
+) -> str:
+    limit = suggested_reply_limit(state, base_limit)
+    trimmed = _trim_to_limit(text.strip(), limit)
+    suffix = emoticons.get(state.label, "")
+    if suffix and not trimmed.endswith(suffix):
+        candidate = f"{trimmed} {suffix}".strip()
+        if len(candidate) <= limit:
+            return candidate
+    return trimmed
+
+
 def _connect(path: str) -> sqlite3.Connection:
     directory = os.path.dirname(path)
     if directory:
@@ -184,3 +210,11 @@ def _decay(value: float, target: float, elapsed_minutes: float, rate: float) -> 
 
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def _trim_to_limit(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
