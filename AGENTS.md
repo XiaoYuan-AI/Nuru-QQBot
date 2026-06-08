@@ -2,50 +2,38 @@
 
 ## Project Structure & Module Organization
 
-This is a small NoneBot2 QQ bot using the OneBot V11 adapter.
+This repository is a Python 3.9+ NoneBot2 QQ bot using the OneBot V11 adapter.
 
-- `bot.py` is the runtime entry point. It initializes NoneBot, registers the adapter, loads plugins from `src/plugins`, and starts the bot.
-- `src/plugins/nuru_chat/` contains the current plugin.
-- `src/plugins/nuru_chat/__init__.py` wires matchers and handler flow.
-- `src/plugins/nuru_chat/config.py` defines environment-backed plugin settings.
-- `src/plugins/nuru_chat/language.py` contains language detection helpers.
-- `src/plugins/nuru_chat/rules.py` contains matcher rules.
-- Tests live under `tests/`, mirroring plugin module names where practical.
+- `bot.py` initializes NoneBot, registers OneBot V11, loads `src/plugins`, and starts the bot.
+- `src/plugins/nuru_chat/plugin.py` wires message matchers, admin commands, queues, memory, mood, tools, and idle scheduling.
+- `src/plugins/nuru_chat/config.py` defines environment-backed settings. Add new runtime options here and mirror them in `.env.example`.
+- `src/plugins/nuru_chat/` keeps behavior split by responsibility: `api.py`, `memory.py`, `mood.py`, `awareness.py`, `rules.py`, `media.py`, `queue.py`, `refusal.py`, `reflection.py`, `tools.py`, `working_memory.py`, `observability.py`, and `moderation.py`.
+- `tests/` contains pytest coverage for plugin modules, including mocked OneBot calls in `test_media.py`.
 
 ## Build, Test, and Development Commands
 
 - `pip install -r requirements.txt` installs runtime dependencies.
 - `python bot.py` starts the bot directly.
 - `nb run --reload` starts the bot through NoneBot CLI with reload support.
-- `python -m compileall -q bot.py src tests` checks Python syntax without running the bot.
+- `python -m compileall -q bot.py src tests` checks syntax.
 - `pytest` runs unit tests.
-- `git diff --check` checks for whitespace errors before commit.
-
-Use Python 3.9 or newer, matching `pyproject.toml`.
+- `git diff --check` checks whitespace before committing.
+- `docker build -t nuru-qqbot .` builds the container image.
 
 ## Coding Style & Naming Conventions
 
-Use 4-space indentation and type hints for new functions. Keep modules focused by responsibility, following the existing split between config, rules, language helpers, and matcher wiring.
-
-Use snake_case for files, modules, functions, and variables. Use PascalCase for Pydantic config classes. Prefer clear matcher names such as `group_chat` or `private_chat` over generic names like `handler`.
-
-Avoid broad refactors unless they directly support the change being made.
+Use 4-space indentation, type hints for new public helpers, and focused modules that match the current layout. Use snake_case for files, modules, functions, and variables. Use PascalCase for classes such as `Config`, `MemoryStore`, and `NuruModelClient`. Keep matcher names descriptive, for example `group_chat`, `private_chat`, or `group_idle_admin`.
 
 ## Testing Guidelines
 
-Use `pytest`. Place tests in `tests/`, use filenames like `test_language.py`, and keep plugin behavior tests close to the module they validate. Cover memory, mood, matcher rules, and language/media behavior before changing bot flow.
+Use `pytest` and name files `tests/test_<module>.py`. Prefer small unit tests for memory, mood, group rules, queue behavior, moderation, and API fallback paths. Mock OneBot API calls instead of requiring a live adapter connection.
 
 ## Commit & Pull Request Guidelines
 
-Recent history uses Conventional Commits. Follow the same format:
+History uses Conventional Commits. Use messages such as `feat: add group memory topics`, `fix: retry Nuru API failures`, `test: cover group mention rules`, or `docs: update admin commands`.
 
-- `feat: add chat response backend`
-- `fix: handle language detection failures`
-- `refactor: restructure chat plugin`
-- `chore: update dependencies`
-
-Pull requests should include a short summary, test results, linked issues when relevant, and configuration changes such as new `.env.example` keys. Include screenshots or logs only when behavior is difficult to verify from code.
+Pull requests should include a short summary, test results, linked issues when relevant, and any `.env.example` changes. Include screenshots or logs only when behavior cannot be verified from tests.
 
 ## Security & Configuration Tips
 
-Do not commit real `.env` files, tokens, QQ credentials, or adapter secrets. Document new configuration in `.env.example` and keep safe defaults in `Config`.
+Do not commit real `.env` files, QQ credentials, API keys, generated memory databases, Chroma indexes, or observability logs. Keep safe defaults in `Config` and document every new environment variable in `.env.example`.

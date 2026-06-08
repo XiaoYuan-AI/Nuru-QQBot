@@ -35,6 +35,7 @@ and scheduled idle group messages.
 |           |-- tools.py
 |           `-- working_memory.py
 `-- tests/
+    |-- test_api.py
     |-- test_awareness.py
     |-- test_media.py
     |-- test_memory.py
@@ -81,6 +82,8 @@ API, image, voice, idle-message, and personality settings in `.env`.
 - Dialogue reflection writes private summaries back into long-term memory.
 - Structured observability events are appended to
   `NURU_OBSERVABILITY_LOG_PATH` when enabled.
+- Nuru API calls retry with exponential backoff and fall back to the configured
+  busy message when the backend stays unavailable.
 
 ## Admin Commands
 

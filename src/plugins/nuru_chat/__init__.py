@@ -5,3 +5,8 @@ except ModuleNotFoundError as exc:
         raise
 
     __plugin_meta__ = None
+except ValueError as exc:
+    if "NoneBot has not been initialized" not in str(exc):
+        raise
+
+    __plugin_meta__ = None
