@@ -55,8 +55,8 @@ class MemoryStore:
         self._conn = _connect(sqlite_path)
         self._create_tables()
         self._collection = None
-        if enable_chroma:
-            self._collection = self._create_chroma_collection()
+        self._enable_chroma = enable_chroma
+        self._collection_checked = False
 
     @property
     def chroma_enabled(self) -> bool:
@@ -140,7 +140,7 @@ class MemoryStore:
         embedding: Optional[Sequence[float]] = None,
         limit: int = 6,
     ) -> List[MemorySearchResult]:
-        if self._collection is not None:
+        if self._collection_or_none() is not None:
             chroma_results = self._recall_from_chroma(user_id, query, embedding, limit)
             if chroma_results:
                 return chroma_results
@@ -260,7 +260,8 @@ class MemoryStore:
         embedding: Optional[Sequence[float]],
         created_at: float,
     ) -> None:
-        if self._collection is None or not content.strip():
+        collection = self._collection_or_none()
+        if collection is None or not content.strip():
             return
 
         vector = list(embedding) if embedding is not None else deterministic_embedding(
@@ -268,7 +269,7 @@ class MemoryStore:
             self.embedding_dimension,
         )
         try:
-            self._collection.add(
+            collection.add(
                 ids=[f"message-{message_id}"],
                 documents=[content],
                 embeddings=[vector],
@@ -293,7 +294,8 @@ class MemoryStore:
         embedding: Optional[Sequence[float]],
         limit: int,
     ) -> List[MemorySearchResult]:
-        if self._collection is None:
+        collection = self._collection_or_none()
+        if collection is None:
             return []
 
         vector = list(embedding) if embedding is not None else deterministic_embedding(
@@ -301,7 +303,7 @@ class MemoryStore:
             self.embedding_dimension,
         )
         try:
-            result = self._collection.query(
+            result = collection.query(
                 query_embeddings=[vector],
                 n_results=limit,
                 where={"user_id": user_id},
@@ -350,6 +352,14 @@ class MemoryStore:
             tuple(ids),
         ).fetchall()
         return [_record_from_row(row) for row in rows]
+
+    def _collection_or_none(self) -> Any:
+        if not self._enable_chroma:
+            return None
+        if not self._collection_checked:
+            self._collection = self._create_chroma_collection()
+            self._collection_checked = True
+        return self._collection
 
 
 def deterministic_embedding(text: str, dimensions: int = 384) -> List[float]:

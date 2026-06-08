@@ -66,6 +66,14 @@ class Config(BaseModel):
         "balanced=:),warm=<3,curious=?,mischievous=>:),sleepy=-_-,irritated=..."
     )
 
+    nuru_tools_enabled: bool = True
+    nuru_working_memory_size: int = 20
+    nuru_reflection_enabled: bool = True
+    nuru_observability_enabled: bool = True
+    nuru_observability_log_path: str = "data/nuru_chat/observability.jsonl"
+    nuru_output_moderation_enabled: bool = True
+    nuru_output_rewrite_message: str = "I need to rephrase that safely. Let's keep going."
+
     def personality_names(self) -> List[str]:
         return _csv_values(self.nuru_available_personalities)
 

@@ -3,7 +3,8 @@
 Nuru QQ Bot is a NoneBot2 backend for a Neuro-sama-like AI VTuber on QQ using
 the OneBot V11 adapter. The `nuru_chat` plugin handles private messages, group
 mentions, long-term memory, mood/personality state, image tasks, optional voice
-messages, queued generation, refusal logging, and scheduled idle group messages.
+messages, queued generation, local tool use, dialogue reflection, refusal logging,
+and scheduled idle group messages.
 
 ## Project Tree
 
@@ -22,19 +23,27 @@ messages, queued generation, refusal logging, and scheduled idle group messages.
 |           |-- language.py
 |           |-- media.py
 |           |-- memory.py
+|           |-- moderation.py
 |           |-- mood.py
+|           |-- observability.py
 |           |-- personality.py
 |           |-- plugin.py
 |           |-- queue.py
+|           |-- reflection.py
 |           |-- refusal.py
-|           `-- rules.py
+|           |-- rules.py
+|           |-- tools.py
+|           `-- working_memory.py
 `-- tests/
     |-- test_awareness.py
     |-- test_media.py
     |-- test_memory.py
     |-- test_mood.py
+    |-- test_observability.py
     |-- test_queue.py
-    `-- test_rules.py
+    |-- test_reflection.py
+    |-- test_rules.py
+    `-- test_tools.py
 ```
 
 ## Setup
@@ -50,6 +59,7 @@ messages, queued generation, refusal logging, and scheduled idle group messages.
 - `nb run --reload` starts the bot through NoneBot CLI with reload support.
 - `python -m compileall -q bot.py src tests` checks syntax.
 - `pytest` runs unit tests.
+- `docker build -t nuru-qqbot .` builds the container image.
 
 ## Configuration
 
@@ -65,6 +75,12 @@ API, image, voice, idle-message, and personality settings in `.env`.
 - Group memory is scoped by group, so recalled topics and inside jokes stay tied
   to the group where they happened.
 - Mood changes reply length, formality, and optional emoticon suffixes.
+- Tool phrases are handled locally before model generation: `calculate 2+2`,
+  `calendar add stream at tomorrow 20:00`, `calendar list`,
+  `remind me hydrate at 21:00`, and `reminders list`.
+- Dialogue reflection writes private summaries back into long-term memory.
+- Structured observability events are appended to
+  `NURU_OBSERVABILITY_LOG_PATH` when enabled.
 
 ## Admin Commands
 

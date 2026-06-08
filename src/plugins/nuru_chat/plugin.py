@@ -12,7 +12,9 @@ from .config import Config
 from .language import is_expected_language, should_validate_language
 from .media import build_reply_message, send_private_voice
 from .memory import MemorySearchResult, MemoryStore
+from .moderation import moderate_output
 from .mood import MoodState, MoodStore, format_mood_reply
+from .observability import ObservabilityStore
 from .personality import (
     allowed_personalities,
     build_system_prompt,
@@ -20,6 +22,7 @@ from .personality import (
 )
 from .personality import PersonalityStore
 from .queue import ScopeMessageQueue
+from .reflection import ReflectionStore, reflect_exchange
 from .refusal import RefusalLogStore, decide_refusal
 from .rules import (
     event_is_tome,
@@ -36,6 +39,8 @@ from .rules import (
     parse_image_generation_prompt,
     parse_personality_command,
 )
+from .tools import ToolStore, handle_tool_text
+from .working_memory import WorkingMemoryStore
 
 __plugin_meta__ = PluginMetadata(
     name="Nuru Chat",
@@ -64,6 +69,13 @@ personality_store = PersonalityStore(
 awareness_store = GroupAwarenessStore(config.nuru_memory_sqlite_path)
 model_client = NuruModelClient(config)
 refusal_store = RefusalLogStore(config.nuru_memory_sqlite_path)
+tool_store = ToolStore(config.nuru_memory_sqlite_path)
+working_memory_store = WorkingMemoryStore(config.nuru_working_memory_size)
+reflection_store = ReflectionStore(config.nuru_memory_sqlite_path)
+observability_store = ObservabilityStore(
+    config.nuru_observability_log_path,
+    enabled=config.nuru_observability_enabled,
+)
 message_queue = ScopeMessageQueue(
     max_queue_depth=config.nuru_max_queue_depth,
     busy_message=config.nuru_busy_message,
@@ -236,6 +248,12 @@ async def build_chat_reply(
 ) -> ModelReply:
     text = event_plain_text(event).strip()
     images = extract_image_sources(event)
+    observability_store.record(
+        "message_received",
+        scope_type,
+        scope_id,
+        {"user_id": user_id, "has_image": bool(images), "addressed": addressed},
+    )
     image_prompt = parse_image_generation_prompt(
         text,
         config.image_generation_commands(),
@@ -247,6 +265,12 @@ async def build_chat_reply(
 
     if should_validate_language(text, bool(images), is_image_request):
         if not is_expected_language(text, config.nuru_required_language):
+            observability_store.record(
+                "message_rejected",
+                scope_type,
+                scope_id,
+                {"reason": "language", "user_id": user_id},
+            )
             return ModelReply(text=config.nuru_language_warning)
 
     mood = mood_store.update_from_message(
@@ -268,23 +292,44 @@ async def build_chat_reply(
     )
     if refusal.refused:
         refusal_store.add(scope_type, scope_id, user_id, refusal.reason, text)
-        return ModelReply(
-            text=format_mood_reply(
-                refusal.message,
-                mood,
-                profile.base_reply_limit,
-                config.mood_emoticons(),
-            )
+        observability_store.record(
+            "message_refused",
+            scope_type,
+            scope_id,
+            {"reason": refusal.reason, "user_id": user_id},
         )
+        return ModelReply(text=shape_reply(refusal.message, mood, profile.base_reply_limit))
+
+    if config.nuru_tools_enabled:
+        try:
+            tool_result = handle_tool_text(tool_store, scope_type, scope_id, text)
+        except ValueError as exc:
+            return ModelReply(text=shape_reply(str(exc), mood, profile.base_reply_limit))
+
+        if tool_result is not None:
+            reply_text = shape_reply(tool_result.output, mood, profile.base_reply_limit)
+            save_exchange_and_reflect(
+                scope_type=scope_type,
+                scope_id=scope_id,
+                user_id=user_id,
+                user_name=user_name,
+                user_text=text,
+                assistant_text=reply_text,
+                mood=mood,
+                personality=profile.name,
+                content_type="tool",
+            )
+            observability_store.record(
+                "tool_called",
+                scope_type,
+                scope_id,
+                {"tool": tool_result.name, "metadata": tool_result.metadata},
+            )
+            return ModelReply(text=reply_text)
 
     if image_prompt is not None:
         image = await model_client.generate_image(image_prompt)
-        image.text = format_mood_reply(
-            image.text,
-            mood,
-            profile.base_reply_limit,
-            config.mood_emoticons(),
-        )
+        image.text = shape_reply(image.text, mood, profile.base_reply_limit)
         content = f"[image generation] {image_prompt}"
         save_memory(
             scope_type,
@@ -340,6 +385,9 @@ async def build_chat_reply(
         mood=mood,
         personality_name=profile.name,
         system_prompt=build_system_prompt(profile, mood),
+        working_memory_context=working_memory_store.format_context(
+            scope_key(scope_type, scope_id)
+        ),
         memories=memory_store.recall(
             user_id=user_id,
             query=memory_text or text,
@@ -356,12 +404,7 @@ async def build_chat_reply(
         else [],
     )
     reply = await model_client.create_chat_reply(payload)
-    reply.text = format_mood_reply(
-        reply.text,
-        mood,
-        profile.base_reply_limit,
-        config.mood_emoticons(),
-    )
+    reply.text = shape_reply(reply.text, mood, profile.base_reply_limit)
     save_memory(
         scope_type,
         scope_id,
@@ -372,6 +415,26 @@ async def build_chat_reply(
         "text",
         mood,
         profile.name,
+    )
+    working_memory_store.add_exchange(scope_key(scope_type, scope_id), text, reply.text)
+    if config.nuru_reflection_enabled:
+        reflect_exchange(
+            memory_store=memory_store,
+            reflection_store=reflection_store,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            user_id=user_id,
+            user_name=user_name,
+            user_text=text,
+            assistant_text=reply.text,
+            mood=mood,
+            topics=working_memory_store.recent_topics(scope_key(scope_type, scope_id)),
+        )
+    observability_store.record(
+        "response_generated",
+        scope_type,
+        scope_id,
+        {"user_id": user_id, "mood": mood.label, "text_length": len(reply.text)},
     )
     return reply
 
@@ -387,6 +450,7 @@ def build_model_payload(
     mood: MoodState,
     personality_name: str,
     system_prompt: str,
+    working_memory_context: str,
     memories: List[MemorySearchResult],
     group_memories: List[MemorySearchResult],
 ) -> Dict[str, Any]:
@@ -399,6 +463,7 @@ def build_model_payload(
         "visual_context": visual_context,
         "personality": personality_name,
         "system_prompt": system_prompt,
+        "working_memory": working_memory_context,
         "mood": {
             "label": mood.label,
             "energy": mood.energy,
@@ -461,6 +526,77 @@ def build_model_payload(
     }
 
 
+def shape_reply(text: str, mood: MoodState, base_reply_limit: int) -> str:
+    moderation = moderate_output(
+        text,
+        config.refusal_terms() if config.nuru_output_moderation_enabled else [],
+        config.nuru_output_rewrite_message,
+    )
+    if moderation.rewritten:
+        observability_store.record(
+            "output_rewritten",
+            mood.scope_type,
+            mood.scope_id,
+            {"categories": moderation.categories},
+        )
+    return format_mood_reply(
+        moderation.text,
+        mood,
+        base_reply_limit,
+        config.mood_emoticons(),
+    )
+
+
+def save_exchange_and_reflect(
+    scope_type: str,
+    scope_id: str,
+    user_id: str,
+    user_name: str,
+    user_text: str,
+    assistant_text: str,
+    mood: MoodState,
+    personality: str,
+    content_type: str,
+) -> None:
+    save_memory(
+        scope_type,
+        scope_id,
+        user_id,
+        user_name,
+        "user",
+        user_text,
+        content_type,
+        mood,
+        personality,
+    )
+    save_memory(
+        scope_type,
+        scope_id,
+        user_id,
+        "Nuru",
+        "assistant",
+        assistant_text,
+        content_type,
+        mood,
+        personality,
+    )
+    key = scope_key(scope_type, scope_id)
+    working_memory_store.add_exchange(key, user_text, assistant_text)
+    if config.nuru_reflection_enabled:
+        reflect_exchange(
+            memory_store=memory_store,
+            reflection_store=reflection_store,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            user_id=user_id,
+            user_name=user_name,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            mood=mood,
+            topics=working_memory_store.recent_topics(key),
+        )
+
+
 def save_memory(
     scope_type: str,
     scope_id: str,
@@ -504,6 +640,10 @@ def display_name(event: MessageEvent) -> str:
         if value:
             return str(value)
     return str(getattr(event, "user_id", "unknown"))
+
+
+def scope_key(scope_type: str, scope_id: str) -> str:
+    return f"{scope_type}:{scope_id}"
 
 
 def is_admin_command_event(event: GroupMessageEvent, command_matches: bool) -> bool:
